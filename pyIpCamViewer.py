@@ -16,10 +16,13 @@ class Stream(object):
             print(f'Error in Stream object {ex}')
             pass
 
+
 WIDTH=320
 LENGTH=240
+ALL_CAMS = np.zeros((LENGTH*2,WIDTH*3,3), dtype=np.uint8)
 USER='user'
 PASS='pass'
+
 STREAMS = {
     'cima_cimo'     : Stream(f'http://{USER}:{PASS}@192.168.1.251/nphMotionJpeg?Resolution={WIDTH}x{LENGTH}&Quality=Standard'),
     'cima_fundo'    : Stream(f'http://{USER}:{PASS}@192.168.1.250/nphMotionJpeg?Resolution={WIDTH}x{LENGTH}&Quality=Standard'),
@@ -29,66 +32,46 @@ STREAMS = {
     'baixo_tulha'   : Stream(f'http://{USER}:{PASS}@192.168.1.247/nphMotionJpeg?Resolution={WIDTH}x{LENGTH}&Quality=Standard'),
 }
 
-ALL_CAMS = np.zeros((LENGTH*2,WIDTH*3,3), dtype=np.uint8)
-# GLOBAL_STOP = False
 
-def display_worker(cam_name, video_cap, draw, stop_lamb):
+def display_worker(cam_name, video_cap, vertical_pos, horizontal_pos, stop_lamb):
     print(f'Started {cam_name} display_worker')
     while(not stop_lamb()):
-        ret, frame = video_cap.read()
-        if frame is None:
+        try:
+            ret, ALL_CAMS[LENGTH*vertical_pos:LENGTH*(vertical_pos+1), WIDTH*horizontal_pos:WIDTH*(horizontal_pos+1), 0:3] = video_cap.read()
+        except Exception as ex:
+            print(f'Display worker error: {ex}')
+            ALL_CAMS[LENGTH*vertical_pos:LENGTH*(vertical_pos+1), WIDTH*horizontal_pos:WIDTH*(horizontal_pos+1), 0:3] = np.zeros((LENGTH, WIDTH, 3), np.uint8)
             try:
                 video_cap.release()
             except Exception as ex:
-                print(f'Display worker error: {ex}')
+                print(f'Display worker error releasing: {ex}')
                 pass
             STREAMS[cam_name].stream = None
             break
-        draw(cam_name, frame)
-        cv2.waitKey(100)
-        time.sleep(0.05)
+        cv2.waitKey(1)
+        time.sleep(0.06)
 
     print(f'{cam_name} thread stopped!')
-
-
-def draw_frame(cam_name, frame):
-    global ALL_CAMS
-    if frame is not None:
-        if cam_name == 'cima_cimo':
-            ALL_CAMS[0:LENGTH, 0:WIDTH, 0:3] = frame
-        elif cam_name == 'cima_fundo':
-            ALL_CAMS[0:LENGTH, WIDTH:WIDTH*2, 0:3] = frame
-        elif cam_name == 'cima_tulha':
-            ALL_CAMS[0:LENGTH, WIDTH*2:WIDTH*3, 0:3] = frame
-        elif cam_name == 'baixo_cimo':
-            ALL_CAMS[LENGTH:LENGTH*2, 0:WIDTH, 0:3] = frame
-        elif cam_name == 'baixo_fundo':
-            ALL_CAMS[LENGTH:LENGTH*2, WIDTH:WIDTH*2, 0:3] = frame
-        elif cam_name == 'baixo_tulha':
-            ALL_CAMS[LENGTH:LENGTH*2, WIDTH*2:WIDTH*3, 0:3] = frame
-    else:
-        try:
-            STREAMS[cam_name].stream.release()
-        except Exception as ex:
-            print(f'blaa {ex}')
-            pass
-        STREAMS[cam_name].stream = None
-        return
 
 
 def stream_connector(stop_lamb):
     ths = {}
 
     while(not stop_lamb()):
+        counter = 0
+        vertical_line = 0
         for cam in STREAMS:
+            if cam.startswith('baixo') and vertical_line == 0:
+                vertical_line = 1
+                counter = 0
             if STREAMS[cam].stream is None:
                 print(f'Trying to connect to {cam}...')
                 STREAMS[cam].start()
                 if STREAMS[cam].stream is not None:
-                    ths[cam] = threading.Thread(target=display_worker, kwargs=dict(cam_name=cam, video_cap= STREAMS[cam].stream, draw=lambda cam_name, frame: 
-        draw_frame(cam_name, frame), stop_lamb=stop_lamb))
+                    ths[cam] = threading.Thread(target=display_worker, kwargs=dict(cam_name=cam, video_cap= STREAMS[cam].stream, vertical_pos=vertical_line, horizontal_pos=counter, stop_lamb=stop_lamb))
                     ths[cam].start()
-        time.sleep(5)
+            counter += 1
+        time.sleep(1)
     
     for cam in STREAMS:
         ths[cam].join()
@@ -104,10 +87,8 @@ def run():
     cv2.setWindowProperty("Aviario",cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     while(True):
-
-        if ALL_CAMS is not None:
-            cv2.imshow('Aviario', ALL_CAMS)
-        cv2.waitKey(100)
+        cv2.imshow('Aviario', ALL_CAMS)
+        cv2.waitKey(5)
         time.sleep(0.05)
         if keyboard.is_pressed('q'):
             stop = True
