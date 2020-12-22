@@ -1,8 +1,8 @@
 import cv2
 import threading
 import time
-import keyboard
 import numpy as np
+import vlc
 
 class Stream(object):
     def __init__(self, link):
@@ -17,19 +17,52 @@ class Stream(object):
             pass
 
 
+class VlcStream(object):
+    def __init__(self, link):
+        self.link = link
+        self.stream = None
+
+    def start(self):
+        try:
+            self.stream = vlc.MediaPlayer(self.link)
+        except Exception as ex:
+            print(f'Error in VlcStream object {ex}')
+            pass
+
 WIDTH=320
 LENGTH=240
 ALL_CAMS = np.zeros((LENGTH*2,WIDTH*3,3), dtype=np.uint8)
+IMG_MASK = ALL_CAMS
 USER='user'
 PASS='pass'
+QUALITY='Standard' # Standard / Motion
+TYPE='nphMotionJpeg' # nphMotionJpeg / SnapShotJPEG
+
+CAMS_MAP = {
+    'cima_cimo'     : (0,0),
+    'cima_fundo'    : (1,0),
+    'cima_tulha'    : (2,0),
+    'baixo_cimo'    : (0,1),
+    'baixo_fundo'   : (1,1),
+    'baixo_tulha'   : (2,1),
+}
+CAMS_MAP_inv = {v: k for k, v in CAMS_MAP.items()}
 
 STREAMS = {
-    'cima_cimo'     : Stream(f'http://{USER}:{PASS}@192.168.1.251/nphMotionJpeg?Resolution={WIDTH}x{LENGTH}&Quality=Standard'),
-    'cima_fundo'    : Stream(f'http://{USER}:{PASS}@192.168.1.250/nphMotionJpeg?Resolution={WIDTH}x{LENGTH}&Quality=Standard'),
-    'cima_tulha'    : Stream(f'http://{USER}:{PASS}@192.168.1.246/nphMotionJpeg?Resolution={WIDTH}x{LENGTH}&Quality=Standard'),
-    'baixo_cimo'    : Stream(f'http://{USER}:{PASS}@192.168.1.249/nphMotionJpeg?Resolution={WIDTH}x{LENGTH}&Quality=Standard'),
-    'baixo_fundo'   : Stream(f'http://{USER}:{PASS}@192.168.1.248/nphMotionJpeg?Resolution={WIDTH}x{LENGTH}&Quality=Standard'),
-    'baixo_tulha'   : Stream(f'http://{USER}:{PASS}@192.168.1.247/nphMotionJpeg?Resolution={WIDTH}x{LENGTH}&Quality=Standard'),
+    'cima_cimo'     : Stream(f'http://{USER}:{PASS}@192.168.1.251/{TYPE}?Resolution={WIDTH}x{LENGTH}&Quality={QUALITY}'),
+    'cima_fundo'    : Stream(f'http://{USER}:{PASS}@192.168.1.250/{TYPE}?Resolution={WIDTH}x{LENGTH}&Quality={QUALITY}'),
+    'cima_tulha'    : Stream(f'http://{USER}:{PASS}@192.168.1.246/{TYPE}?Resolution={WIDTH}x{LENGTH}&Quality={QUALITY}'),
+    'baixo_cimo'    : Stream(f'http://{USER}:{PASS}@192.168.1.249/{TYPE}?Resolution={WIDTH}x{LENGTH}&Quality={QUALITY}'),
+    'baixo_fundo'   : Stream(f'http://{USER}:{PASS}@192.168.1.248/{TYPE}?Resolution={WIDTH}x{LENGTH}&Quality={QUALITY}'),
+    'baixo_tulha'   : Stream(f'http://{USER}:{PASS}@192.168.1.247/{TYPE}?Resolution={WIDTH}x{LENGTH}&Quality={QUALITY}')
+}
+VLC_STREAMS = {
+    'cima_cimo'     : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.251/MediaInput/mpeg4'),
+    'cima_fundo'    : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.250/MediaInput/mpeg4'),
+    'cima_tulha'    : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.246/MediaInput/mpeg4'),
+    'baixo_cimo'    : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.249/MediaInput/mpeg4'),
+    'baixo_fundo'   : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.248/MediaInput/mpeg4'),
+    'baixo_tulha'   : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.247/MediaInput/mpeg4')
 }
 
 
@@ -58,24 +91,31 @@ def stream_connector(stop_lamb):
     ths = {}
 
     while(not stop_lamb()):
-        counter = 0
-        vertical_line = 0
         for cam in STREAMS:
-            if cam.startswith('baixo') and vertical_line == 0:
-                vertical_line = 1
-                counter = 0
+            column, line = CAMS_MAP[cam]
             if STREAMS[cam].stream is None:
                 print(f'Trying to connect to {cam}...')
                 STREAMS[cam].start()
                 if STREAMS[cam].stream is not None:
-                    ths[cam] = threading.Thread(target=display_worker, kwargs=dict(cam_name=cam, video_cap= STREAMS[cam].stream, vertical_pos=vertical_line, horizontal_pos=counter, stop_lamb=stop_lamb))
+                    ths[cam] = threading.Thread(target=display_worker, kwargs=dict(cam_name=cam, video_cap= STREAMS[cam].stream, vertical_pos=line, horizontal_pos=column, stop_lamb=stop_lamb))
                     ths[cam].start()
-            counter += 1
         time.sleep(1)
     
     for cam in STREAMS:
         ths[cam].join()
         STREAMS[cam].stream.release()
+
+
+mouseX=0.0
+mouseY=0.0
+
+def draw_circle(event,x,y,flags,param):
+    global mouseX,mouseY
+    if event == cv2.EVENT_MOUSEMOVE:
+        mouseX,mouseY = x,y
+    elif event == cv2.EVENT_LBUTTONDBLCLK:
+        print(f'Clicked on {CAMS_MAP_inv[(int(x / WIDTH),int(y / LENGTH))]}')
+        VLC_STREAMS[CAMS_MAP_inv[(int(x / WIDTH),int(y / LENGTH))]].start()
 
 
 def run():
@@ -84,17 +124,27 @@ def run():
     th = threading.Thread(target=stream_connector, kwargs=dict(stop_lamb= lambda:stop))
     th.start()
     cv2.namedWindow('Aviario',cv2.WND_PROP_FULLSCREEN)
-    cv2.setWindowProperty("Aviario",cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.setWindowProperty('Aviario',cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.setMouseCallback('Aviario',draw_circle)
 
     while(True):
+        rec_x0 = int(mouseX / WIDTH)*WIDTH
+        rec_x1 = rec_x0 + WIDTH
+        rec_y0 = int(mouseY / LENGTH)*LENGTH
+        rec_y1 = rec_y0 + LENGTH
+
+        cv2.rectangle(ALL_CAMS, (rec_x0,rec_y0), (rec_x1,rec_y1), (0,255,0), 3)
         cv2.imshow('Aviario', ALL_CAMS)
-        cv2.waitKey(5)
+
+        key_pressed = cv2.waitKey(5) & 0xFF
         time.sleep(0.05)
-        if keyboard.is_pressed('q'):
+        if key_pressed == ord('q'):
             stop = True
             print('Stopping all')
             break
-    
+        elif key_pressed == ord('a'):
+            print(f'{mouseX},{mouseY}')
+
     th.join()
     cv2.destroyAllWindows()
 
