@@ -3,6 +3,7 @@ import threading
 import time
 import numpy as np
 import vlc
+import keyboard
 
 class Stream(object):
     def __init__(self, link):
@@ -22,13 +23,17 @@ class VlcStream(object):
         self.link = link
         self.stream = None
 
-    def start(self):
+    def open(self):
         try:
             self.stream = vlc.MediaPlayer(self.link)
         except Exception as ex:
             print(f'Error in VlcStream object {ex}')
             pass
 
+
+mouseX=None
+mouseY=None
+SELECTED_CAM_VLC=None
 WIDTH=320
 LENGTH=240
 ALL_CAMS = np.zeros((LENGTH*2,WIDTH*3,3), dtype=np.uint8)
@@ -62,7 +67,7 @@ VLC_STREAMS = {
     'cima_tulha'    : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.246/MediaInput/mpeg4'),
     'baixo_cimo'    : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.249/MediaInput/mpeg4'),
     'baixo_fundo'   : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.248/MediaInput/mpeg4'),
-    'baixo_tulha'   : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.247/MediaInput/mpeg4')
+    'baixo_tulha'   : VlcStream(f'rtsp://{USER}:{PASS}@192.168.1.242/MediaInput/mpeg4')
 }
 
 
@@ -83,7 +88,12 @@ def display_worker(cam_name, video_cap, vertical_pos, horizontal_pos, stop_lamb)
             break
         cv2.waitKey(1)
         time.sleep(0.06)
-
+    try:
+        STREAMS[cam_name].stream.release()
+        STREAMS[cam_name].stream = None
+    except Exception as ex:
+        print(f'Display worker error releasing: {ex}')
+        pass
     print(f'{cam_name} thread stopped!')
 
 
@@ -103,50 +113,80 @@ def stream_connector(stop_lamb):
     
     for cam in STREAMS:
         ths[cam].join()
-        STREAMS[cam].stream.release()
 
 
-mouseX=0.0
-mouseY=0.0
-
-def draw_circle(event,x,y,flags,param):
+def select_camera(event,x,y,flags,param):
     global mouseX,mouseY
+    global SELECTED_CAM_VLC
     if event == cv2.EVENT_MOUSEMOVE:
         mouseX,mouseY = x,y
     elif event == cv2.EVENT_LBUTTONDBLCLK:
-        print(f'Clicked on {CAMS_MAP_inv[(int(x / WIDTH),int(y / LENGTH))]}')
-        VLC_STREAMS[CAMS_MAP_inv[(int(x / WIDTH),int(y / LENGTH))]].start()
+        selected_cam=CAMS_MAP_inv[(int(x / WIDTH),int(y / LENGTH))]
+        print(f'Clicked on {selected_cam}')
+        VLC_STREAMS[selected_cam].open()
+        if VLC_STREAMS[selected_cam].stream is not None:
+            SELECTED_CAM_VLC=VLC_STREAMS[selected_cam]
 
 
 def run():
     global ALL_CAMS
-    stop = False
-    th = threading.Thread(target=stream_connector, kwargs=dict(stop_lamb= lambda:stop))
-    th.start()
-    cv2.namedWindow('Aviario',cv2.WND_PROP_FULLSCREEN)
-    cv2.setWindowProperty('Aviario',cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    cv2.setMouseCallback('Aviario',draw_circle)
+    global SELECTED_CAM_VLC
+    drawing=False
+    playing_vlc=False
+    vlc_not_playing_counter=0
 
     while(True):
-        rec_x0 = int(mouseX / WIDTH)*WIDTH
-        rec_x1 = rec_x0 + WIDTH
-        rec_y0 = int(mouseY / LENGTH)*LENGTH
-        rec_y1 = rec_y0 + LENGTH
-
-        cv2.rectangle(ALL_CAMS, (rec_x0,rec_y0), (rec_x1,rec_y1), (0,255,0), 3)
-        cv2.imshow('Aviario', ALL_CAMS)
-
+        if SELECTED_CAM_VLC is None and not drawing:
+            print('drawing...')
+            stop = False
+            drawing=True
+            playing_vlc=False
+            th = threading.Thread(target=stream_connector, kwargs=dict(stop_lamb= lambda:stop))
+            th.start()
+            cv2.namedWindow('Aviario',cv2.WND_PROP_FULLSCREEN)
+            cv2.setWindowProperty('Aviario',cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            cv2.setMouseCallback('Aviario',select_camera)
+        elif SELECTED_CAM_VLC is not None and not playing_vlc:
+            print(f'Vlc Selected {SELECTED_CAM_VLC.link}')
+            #th.join()  
+            playing_vlc=True
+            drawing=False
+            stop=True
+            vlc_not_playing_counter=0
+            SELECTED_CAM_VLC.stream.play()          
+            SELECTED_CAM_VLC.stream.toggle_fullscreen()
+            cv2.destroyAllWindows()
+        
         key_pressed = cv2.waitKey(5) & 0xFF
-        time.sleep(0.05)
-        if key_pressed == ord('q'):
-            stop = True
-            print('Stopping all')
-            break
-        elif key_pressed == ord('a'):
-            print(f'{mouseX},{mouseY}')
+        if playing_vlc:
+            time.sleep(0.1)
+            if not SELECTED_CAM_VLC.stream.is_playing():
+                vlc_not_playing_counter += 1
+            else:
+                vlc_not_playing_counter = 0
+            if keyboard.is_pressed(' ') or SELECTED_CAM_VLC is None or vlc_not_playing_counter > 10:
+                SELECTED_CAM_VLC.stream.stop()
+                SELECTED_CAM_VLC=None
+                playing_vlc=False
+        elif drawing: 
+            if mouseX is not None and mouseY is not None:
+                rec_x0 = int(mouseX / WIDTH)*WIDTH
+                rec_x1 = rec_x0 + WIDTH
+                rec_y0 = int(mouseY / LENGTH)*LENGTH
+                rec_y1 = rec_y0 + LENGTH
+                cv2.rectangle(ALL_CAMS, (rec_x0,rec_y0), (rec_x1,rec_y1), (0,255,0), 3)
+            cv2.imshow('Aviario', ALL_CAMS)
+            time.sleep(0.05)
+            if key_pressed == ord('q'):
+                stop = True
+                print('Stopping all')
+                break
+            elif key_pressed == ord('a'):
+                print(f'{mouseX},{mouseY}')
 
-    th.join()
+    #th.join()
     cv2.destroyAllWindows()
+    exit()
 
 
 if __name__ == '__main__':
